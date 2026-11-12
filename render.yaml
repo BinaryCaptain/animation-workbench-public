@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: animation-workbench
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: WORKBENCH_OWNER_PASSWORD
+        generateValue: true
+      - key: ARK_API_KEY
+        sync: false
+      - key: ARK_MODEL
+        sync: false
+      - key: ARK_BASE_URL
+        sync: false
+      - key: ARK_VISION_ENABLED
+        value: "true"
+      - key: MODEL_REQUESTS_PER_MINUTE
+        value: "10"

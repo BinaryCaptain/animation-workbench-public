@@ -1,0 +1,67 @@
+import {getDuration,loadAssets,renderProject,validateProject} from './core.js';
+import {muxMP4} from './mp4.js';
+
+const tick=()=>new Promise(r=>setTimeout(r,0));
+const checkAbort=signal=>{if(signal?.aborted)throw new DOMException('导出已取消','AbortError');};
+function dataBytes(url){const base=url.slice(url.indexOf(',')+1),raw=atob(base),arr=new Uint8Array(raw.length);for(let i=0;i<arr.length;i++)arr[i]=raw.charCodeAt(i);return arr.buffer;}
+
+export async function prepareSound(project,duration,sampleRate=48000){
+ const count=Math.ceil(duration*sampleRate),left=new Float32Array(count),right=new Float32Array(count);
+ if(project.sound?.enabled){
+  const level=Math.max(0,Math.min(1,Number(project.sound.volume??.18))),notes=[164.81,196,246.94,329.63,246.94,196,146.83,196];
+  for(let i=0;i<count;i++){
+   const t=i/sampleRate,beat=Math.floor(t/.5),phase=t% .5,note=notes[beat%notes.length],env=Math.exp(-phase*5)*(1-Math.exp(-phase*80)),fade=Math.min(1,t/.4,(duration-t)/.6);
+   const bell=(Math.sin(2*Math.PI*note*t)+.25*Math.sin(2*Math.PI*note*2*t))*.16*env;
+   const pad=(Math.sin(2*Math.PI*82.405*t)+Math.sin(2*Math.PI*123.47*t))*.055;
+   const pulse=Math.sin(2*Math.PI*(70-35*phase)*phase)*Math.exp(-phase*30)*.10;
+   left[i]=(bell+pad+pulse)*level*fade*4;right[i]=(bell*.92+pad+pulse)*level*fade*4;
+  }
+ }
+ if(project.audio?.dataUrl){
+  const ac=new OfflineAudioContext(2,1,sampleRate),audio=await ac.decodeAudioData(dataBytes(project.audio.dataUrl));const sourceL=audio.getChannelData(0),sourceR=audio.getChannelData(Math.min(1,audio.numberOfChannels-1)),start=Math.round(Math.max(0,Number(project.audio.start||0))*sampleRate),level=Math.max(0,Math.min(2,Number(project.audio.volume??.8)));
+  const length=Math.min(count-start,Math.floor(audio.duration*sampleRate));
+  for(let i=0;i<length;i++){const j=Math.min(sourceL.length-1,Math.floor(i/sampleRate*audio.sampleRate));left[i+start]+=sourceL[j]*level;right[i+start]+=sourceR[j]*level;}
+ }
+ for(let i=0;i<count;i++){left[i]=Math.max(-.96,Math.min(.96,left[i]));right[i]=Math.max(-.96,Math.min(.96,right[i]));}
+ return {left,right,sampleRate};
+}
+
+async function encodeAudio(sound,signal,onProgress,codec='mp4a.40.2'){
+ if(typeof AudioEncoder==='undefined')throw new Error('当前浏览器无法编码音轨，请使用新版 Chrome 或选择 WebM');
+ const config={codec,sampleRate:sound.sampleRate,numberOfChannels:2,bitrate:192000};const supported=await AudioEncoder.isConfigSupported(config);if(!supported.supported){if(codec!=='opus')return encodeAudio(sound,signal,onProgress,'opus');throw new Error('当前浏览器无法编码音轨，请选择 WebM');}
+ const samples=[];let desc=null,error=null;
+ const encoder=new AudioEncoder({output:(chunk,metadata)=>{const data=new Uint8Array(chunk.byteLength);chunk.copyTo(data);if(metadata?.decoderConfig?.description)desc=new Uint8Array(metadata.decoderConfig.description).slice().buffer;samples.push({data,duration:Math.round((chunk.duration||1024/sound.sampleRate*1e6)/1e6*sound.sampleRate),timestamp:chunk.timestamp,key:true});},error:e=>{error=e;}});
+ try{encoder.configure(config);const len=sound.left.length;for(let i=0;i<len;i+=1024){checkAbort(signal);if(error)throw error;const n=Math.min(1024,len-i),data=new Float32Array(n*2);data.set(sound.left.subarray(i,i+n));data.set(sound.right.subarray(i,i+n),n);const frame=new AudioData({format:'f32-planar',sampleRate:sound.sampleRate,numberOfFrames:n,numberOfChannels:2,timestamp:Math.round(i/sound.sampleRate*1e6),data});encoder.encode(frame);frame.close();if(encoder.encodeQueueSize>60){await encoder.flush();await tick();}if(i%49152===0)onProgress?.(i/len);}await encoder.flush();if(error)throw error;return {codec,timescale:sound.sampleRate,channels:2,config:desc,samples,presentationDuration:sound.left.length};}catch(e){if(codec!=='opus'&&e.name!=='AbortError'){if(encoder.state!=='closed')encoder.close();return encodeAudio(sound,signal,onProgress,'opus');}throw e;}finally{if(encoder.state!=='closed')encoder.close();}
+}
+
+export async function exportVideo(raw,{format='mp4',onProgress=()=>{},signal}={}){
+ const project=validateProject(raw),duration=getDuration(project),images=await loadAssets(project);checkAbort(signal);
+ if(duration>1200)throw new Error('请将本次导出控制在 20 分钟以内，或分镜头导出');
+ const canvas=document.createElement('canvas');canvas.width=project.width;canvas.height=project.height;const ctx=canvas.getContext('2d',{alpha:false});
+ if(format==='webm')return exportWebM(project,canvas,ctx,images,{onProgress,signal});
+ if(typeof VideoEncoder==='undefined')return exportWebM(project,canvas,ctx,images,{onProgress,signal});
+ let config={codec:'avc1.420028',width:project.width,height:project.height,bitrate:Math.max(2000000,project.width*project.height*6),framerate:project.fps,hardwareAcceleration:'prefer-software',latencyMode:'realtime',avc:{format:'avc'}};
+ let supported=await VideoEncoder.isConfigSupported(config);if(!supported.supported){config.codec='avc1.4d002a';supported=await VideoEncoder.isConfigSupported(config);}if(!supported.supported)return exportWebM(project,canvas,ctx,images,{onProgress,signal});
+ const samples=[];let desc=null,error=null;const encoder=new VideoEncoder({output:(chunk,metadata)=>{const data=new Uint8Array(chunk.byteLength);chunk.copyTo(data);if(metadata?.decoderConfig?.description)desc=new Uint8Array(metadata.decoderConfig.description).slice().buffer;samples.push({data,timestamp:chunk.timestamp,duration:chunk.duration||Math.round(1e6/project.fps),key:chunk.type==='key'});},error:e=>{error=e;}});
+ try{
+  encoder.configure(config);const frames=Math.ceil(duration*project.fps);
+  for(let i=0;i<frames;i++){
+   checkAbort(signal);if(error)throw error;renderProject(ctx,project,i/project.fps,{images});const timestamp=Math.round(i/project.fps*1e6),next=Math.round((i+1)/project.fps*1e6);const frame=new VideoFrame(canvas,{timestamp,duration:next-timestamp});encoder.encode(frame,{keyFrame:i%(project.fps*2)===0});frame.close();
+   if(encoder.encodeQueueSize>6)await encoder.flush();
+   if(i%3===0){onProgress(.86*i/frames);await tick();}
+  }
+  await encoder.flush();if(error)throw error;if(!desc)throw new Error('视频编码器未返回 AVC 配置');
+  // Realtime AVC disables reordered frames; retain encode order and exact durations.
+  let audio=null;if(project.sound?.enabled||project.audio?.dataUrl){const sound=await prepareSound(project,duration);checkAbort(signal);audio=await encodeAudio(sound,signal,p=>onProgress(.86+p*.13));}
+  checkAbort(signal);const blob=muxMP4({width:project.width,height:project.height,timescale:1000000,config:desc,samples},audio);onProgress(1);return blob;
+ }finally{if(encoder.state!=='closed')encoder.close();}
+}
+
+async function exportWebM(project,canvas,ctx,images,{onProgress,signal}){
+ if(typeof MediaRecorder==='undefined')throw new Error('此浏览器无法导出视频，请在新版 Chrome 中打开');
+ const duration=getDuration(project),stream=canvas.captureStream(project.fps),chunks=[];let ac=null,source=null;
+ if(project.sound?.enabled||project.audio?.dataUrl){const sound=await prepareSound(project,duration);ac=new AudioContext({sampleRate:sound.sampleRate});await ac.resume();const buffer=ac.createBuffer(2,sound.left.length,sound.sampleRate);buffer.copyToChannel(sound.left,0);buffer.copyToChannel(sound.right,1);source=ac.createBufferSource();source.buffer=buffer;const dest=ac.createMediaStreamDestination();source.connect(dest);dest.stream.getAudioTracks().forEach(t=>stream.addTrack(t));}
+ const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(m=>MediaRecorder.isTypeSupported(m));if(!mime)throw new Error('当前浏览器没有可用的视频编码器');
+ const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5000000});const finished=new Promise((resolve,reject)=>{rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};rec.onstop=()=>resolve(new Blob(chunks,{type:'video/webm'}));rec.onerror=e=>reject(e.error||new Error('视频录制失败'));});
+ try{renderProject(ctx,project,0,{images});rec.start();source?.start();const start=performance.now();while((performance.now()-start)/1000<duration){checkAbort(signal);const t=(performance.now()-start)/1000;renderProject(ctx,project,t,{images});onProgress(Math.min(.99,t/duration));await new Promise(r=>setTimeout(r,1000/project.fps));}rec.stop();const blob=await finished;onProgress(1);return blob;}finally{if(rec.state!=='inactive')rec.stop();source?.stop();stream.getTracks().forEach(t=>t.stop());await ac?.close();}
+}

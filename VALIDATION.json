@@ -1,0 +1,45 @@
+{
+  "package": "animation-workbench-public",
+  "version": "2.1.1",
+  "actualPublicDeployment": false,
+  "checks": {
+    "backendTests": {
+      "passed": 18,
+      "mode": "in-process real HTTP handler with mock model provider"
+    },
+    "browser": {
+      "mode": "HTTPS request interception, in-process real handler, mock upstream; no public deployment",
+      "effects": 20,
+      "guestDenied": 401,
+      "ownerLogin": true,
+      "ownerPatch": true,
+      "logout": true,
+      "modelCalls": 1,
+      "layout": {
+        "width": 390,
+        "scrollWidth": 390
+      },
+      "errors": []
+    },
+    "originalEffectsSourceIdentical": {
+      "src/core.js": true,
+      "src/styles-a.js": true,
+      "src/styles-b.js": true,
+      "src/helpers-b.js": true,
+      "src/primitives3d.js": true,
+      "src/video.js": true,
+      "src/mp4.js": true
+    },
+    "mainProjectChangedDuringPackaging": [],
+    "productionDockerBuild": "not run; external registry access unavailable",
+    "realCloudModelConnectivity": "not tested; requires matching publicly reachable API endpoint and platform secrets"
+  },
+  "credentialsIncluded": false,
+  "deploymentFiles": [
+    "Dockerfile",
+    "render.yaml",
+    ".env.example",
+    "README.md",
+    "HANDOFF.md"
+  ]
+}

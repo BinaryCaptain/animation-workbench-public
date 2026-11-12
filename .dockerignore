@@ -1,0 +1,12 @@
+node_modules
+.git
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*runtime*.json
+tests
+standalone.html
+*.zip
+.DS_Store
